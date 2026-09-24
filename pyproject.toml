@@ -23,6 +23,10 @@ classifiers = [
 ]
 dependencies = ["Jinja2>=3.1"]
 
+[project.urls]
+Homepage = "https://github.com/huzaifanasir08/django-api-starter"
+Issues = "https://github.com/huzaifanasir08/django-api-starter/issues"
+
 [project.optional-dependencies]
 dev = ["pytest>=8", "build", "twine"]
 
