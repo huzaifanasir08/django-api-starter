@@ -32,6 +32,7 @@ dev = ["pytest>=8", "build", "twine"]
 
 [project.scripts]
 django-starter = "django_api_starter.cli:main"
+django-api-starter = "django_api_starter.cli:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "django_api_starter.__version__" }

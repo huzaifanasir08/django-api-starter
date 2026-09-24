@@ -9,6 +9,9 @@ pip install django-api-starter
 django-starter new myproject
 ```
 
+This creates a `myproject/` folder. The command is also available as
+`django-api-starter`, and `python -m django_api_starter` works too.
+
 ## What you get
 
 ```text
