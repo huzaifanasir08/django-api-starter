@@ -1,0 +1,271 @@
+from django.conf import settings
+from django.contrib.auth.tokens import default_token_generator
+{% if two_factor %}
+from django.utils import timezone
+{% endif %}
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
+from rest_framework import filters, generics, status
+from rest_framework.exceptions import ValidationError
+{% if two_factor %}
+from rest_framework.exceptions import Throttled
+{% endif %}
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.settings import api_settings as jwt_settings
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from core.auth import issue_tokens, revoke_all_tokens
+from core.permissions import IsAdmin
+from core.utils import send_templated_email
+
+{% if two_factor %}
+from .models import OTP, User
+{% else %}
+from .models import User
+{% endif %}
+from .serializers import (
+    AdminUserSerializer,
+    ChangePasswordSerializer,
+    LoginSerializer,
+    LogoutSerializer,
+    PasswordResetConfirmSerializer,
+    PasswordResetSerializer,
+    RegisterSerializer,
+{% if two_factor %}
+    ResendOTPSerializer,
+{% endif %}
+    UserSerializer,
+{% if two_factor %}
+    VerifyOTPSerializer,
+{% endif %}
+)
+
+
+def auth_response(user, request):
+    """Body returned whenever a user ends up logged in."""
+    return {
+        "user": UserSerializer(user, context={"request": request}).data,
+        "tokens": issue_tokens(user),
+    }
+{% if two_factor %}
+
+
+def otp_challenge(user, purpose, status_code=status.HTTP_200_OK):
+    """Email a fresh code and tell the client to call ``/auth/otp/verify/``.
+
+    No JWT is issued until the code is verified.
+    """
+    otp, code = OTP.issue(user, purpose)
+    send_templated_email(
+        to=user.email,
+        subject=f"Your verification code: {code}",
+        template="otp",
+        context={
+            "user": user,
+            "code": code,
+            "purpose": otp.get_purpose_display(),
+            "expiry_minutes": settings.OTP_EXPIRY_MINUTES,
+        },
+    )
+    return Response(
+        {
+            "message": f"A verification code was sent to {user.email}.",
+            "requires_otp": True,
+            "verification_id": str(otp.pk),
+            "purpose": purpose,
+            "expires_at": otp.expires_at,
+        },
+        status=status_code,
+    )
+{% endif %}
+
+
+class PublicAPIView(generics.GenericAPIView):
+    """Unauthenticated, throttled endpoint. A stale Authorization header is ignored."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_scope = "auth"
+
+
+# Registration and login
+
+
+class RegisterView(PublicAPIView):
+    serializer_class = RegisterSerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+{% if two_factor %}
+        return otp_challenge(user, OTP.Purpose.EMAIL_VERIFICATION, status.HTTP_201_CREATED)
+{% else %}
+        return Response(auth_response(user, request), status=status.HTTP_201_CREATED)
+{% endif %}
+
+
+class LoginView(PublicAPIView):
+    serializer_class = LoginSerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.validated_data["user"]
+{% if two_factor %}
+        if not user.is_email_verified:
+            return otp_challenge(user, OTP.Purpose.EMAIL_VERIFICATION)
+        if user.two_factor_enabled:
+            return otp_challenge(user, OTP.Purpose.LOGIN)
+{% endif %}
+        return Response(auth_response(user, request))
+
+
+class LogoutView(generics.GenericAPIView):
+    """Blacklist the given refresh token so it can't be used again."""
+
+    serializer_class = LogoutSerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            token = RefreshToken(serializer.validated_data["refresh"])
+            if str(token.get(jwt_settings.USER_ID_CLAIM)) != str(request.user.pk):
+                raise TokenError("Token does not belong to this user.")
+            token.blacklist()
+        except TokenError as exc:
+            raise ValidationError({"refresh": "Invalid or expired refresh token."}) from exc
+        return Response(status=status.HTTP_204_NO_CONTENT)
+{% if two_factor %}
+
+
+# One-time passwords
+
+
+class VerifyOTPView(PublicAPIView):
+    serializer_class = VerifyOTPSerializer
+    throttle_scope = "otp"
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        otp = serializer.validated_data["otp"]
+        user = otp.user
+        if otp.purpose == OTP.Purpose.EMAIL_VERIFICATION and not user.is_email_verified:
+            user.is_email_verified = True
+            user.save(update_fields=["is_email_verified", "updated_at"])
+        return Response(auth_response(user, request))
+
+
+class ResendOTPView(PublicAPIView):
+    serializer_class = ResendOTPSerializer
+    throttle_scope = "otp"
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        otp = serializer.validated_data["otp"]
+        elapsed = (timezone.now() - otp.created_at).total_seconds()
+        if elapsed < settings.OTP_RESEND_COOLDOWN_SECONDS:
+            raise Throttled(
+                wait=settings.OTP_RESEND_COOLDOWN_SECONDS - elapsed,
+                detail="Please wait before requesting another code.",
+            )
+        return otp_challenge(otp.user, otp.purpose)
+{% endif %}
+
+
+# Profile
+
+
+class MeView(generics.RetrieveUpdateAPIView):
+    """``GET`` the current user's profile or ``PATCH`` it (JSON or multipart for the picture)."""
+
+    serializer_class = UserSerializer
+    http_method_names = ["get", "patch", "head", "options"]
+
+    def get_object(self):
+        return self.request.user
+
+
+# Passwords
+
+
+class ChangePasswordView(generics.GenericAPIView):
+    """Change the password, sign out every other session and return fresh tokens."""
+
+    serializer_class = ChangePasswordSerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+        user.set_password(serializer.validated_data["new_password"])
+        user.save(update_fields=["password", "updated_at"])
+        revoke_all_tokens(user)
+        return Response({"message": "Password changed.", **auth_response(user, request)})
+
+
+class PasswordResetView(PublicAPIView):
+    """Email a reset link. Always answers the same way so emails can't be probed."""
+
+    serializer_class = PasswordResetSerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = User.objects.filter(email__iexact=serializer.validated_data["email"], is_active=True).first()
+        if user is not None:
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+            token = default_token_generator.make_token(user)
+            send_templated_email(
+                to=user.email,
+                subject="Reset your password",
+                template="password_reset",
+                context={
+                    "user": user,
+                    "reset_url": settings.PASSWORD_RESET_URL.format(uid=uid, token=token),
+                    "expiry_minutes": settings.PASSWORD_RESET_TIMEOUT // 60,
+                },
+            )
+        return Response({"message": "If an account exists for that email, a reset link has been sent."})
+
+
+class PasswordResetConfirmView(PublicAPIView):
+    serializer_class = PasswordResetConfirmSerializer
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.validated_data["user"]
+        user.set_password(serializer.validated_data["new_password"])
+        user.save(update_fields=["password", "updated_at"])
+        revoke_all_tokens(user)
+        return Response({"message": "Your password has been reset. You can now log in."})
+
+
+# User management (admins only)
+
+
+class UserListView(generics.ListAPIView):
+    queryset = User.objects.all()
+    serializer_class = AdminUserSerializer
+    permission_classes = [IsAuthenticated, IsAdmin]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["email", "name", "phone"]
+    ordering_fields = ["date_joined", "email", "name"]
+
+
+class UserDetailView(generics.RetrieveUpdateAPIView):
+    queryset = User.objects.all()
+    serializer_class = AdminUserSerializer
+    permission_classes = [IsAuthenticated, IsAdmin]
+    http_method_names = ["get", "patch", "head", "options"]
+
+    def perform_update(self, serializer):
+        user = serializer.save()
+        if not user.is_active:
+            revoke_all_tokens(user)

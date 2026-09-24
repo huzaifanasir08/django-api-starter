@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "django-api-starter"
+dynamic = ["version"]  # read from src/django_api_starter/__init__.py
+description = "Generate a production-ready Django REST API project with a custom user, JWT auth and optional OTP 2FA."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Huzaifa Nasir", email = "huzaifanasirbutt08@gmail.com" }]
+keywords = ["django", "django-rest-framework", "jwt", "starter", "template", "generator", "2fa"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Framework :: Django",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Code Generators",
+]
+dependencies = ["Jinja2>=3.1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "build", "twine"]
+
+[project.scripts]
+django-starter = "django_api_starter.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "django_api_starter.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+# The template folders count as (namespace) packages; they only contain .j2 and data files.
+include = ["django_api_starter*"]
+
+[tool.setuptools.package-data]
+django_api_starter = ["template/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

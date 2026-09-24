@@ -1,0 +1,142 @@
+import re
+from datetime import timedelta
+
+import pytest
+from django.core import mail
+from django.urls import reverse
+from django.utils import timezone
+
+from apps.accounts.models import OTP, User
+from core.factories import UserFactory
+
+pytestmark = pytest.mark.django_db
+
+REGISTER_DATA = {
+    "name": "Jane Doe",
+    "email": "jane@example.com",
+    "password": "Sup3r-Secret-pass",
+    "password_confirm": "Sup3r-Secret-pass",
+}
+
+
+def last_code():
+    return re.search(r"\b(\d{6})\b", mail.outbox[-1].body).group(1)
+
+
+def verify(api_client, verification_id, code):
+    return api_client.post(reverse("accounts:otp-verify"), {"verification_id": verification_id, "code": code})
+
+
+def login(api_client, user, password):
+    return api_client.post(reverse("accounts:login"), {"email": user.email, "password": password})
+
+
+def test_register_then_verify_email(api_client):
+    response = api_client.post(reverse("accounts:register"), REGISTER_DATA)
+    assert response.data["purpose"] == OTP.Purpose.EMAIL_VERIFICATION
+    assert len(mail.outbox) == 1
+
+    verified = verify(api_client, response.data["verification_id"], last_code())
+
+    assert verified.status_code == 200
+    assert set(verified.data["tokens"]) == {"access", "refresh"}
+    assert User.objects.get().is_email_verified
+
+
+def test_code_is_single_use(api_client):
+    challenge = api_client.post(reverse("accounts:register"), REGISTER_DATA).data
+    code = last_code()
+
+    assert verify(api_client, challenge["verification_id"], code).status_code == 200
+    assert verify(api_client, challenge["verification_id"], code).status_code == 400
+
+
+def test_code_is_not_stored_in_plain_text(api_client):
+    api_client.post(reverse("accounts:register"), REGISTER_DATA)
+
+    assert last_code() not in OTP.objects.get().code_hash
+
+
+def test_wrong_code_counts_attempts_and_locks(api_client, settings):
+    challenge = api_client.post(reverse("accounts:register"), REGISTER_DATA).data
+    code = last_code()
+    wrong = "000000" if code != "000000" else "111111"
+
+    for _ in range(settings.OTP_MAX_ATTEMPTS):
+        response = verify(api_client, challenge["verification_id"], wrong)
+        assert response.status_code == 400
+        assert "code" in response.data["errors"]
+
+    locked = verify(api_client, challenge["verification_id"], code)
+    assert locked.status_code == 400
+    assert "Too many" in locked.data["message"]
+
+
+def test_expired_code_is_rejected(api_client):
+    challenge = api_client.post(reverse("accounts:register"), REGISTER_DATA).data
+    OTP.objects.update(expires_at=timezone.now() - timedelta(seconds=1))
+
+    response = verify(api_client, challenge["verification_id"], last_code())
+
+    assert response.status_code == 400
+    assert "expired" in response.data["message"]
+
+
+def test_resend_respects_cooldown(api_client):
+    challenge = api_client.post(reverse("accounts:register"), REGISTER_DATA).data
+
+    response = api_client.post(reverse("accounts:otp-resend"), {"verification_id": challenge["verification_id"]})
+
+    assert response.status_code == 429
+
+
+def test_resend_replaces_previous_code(api_client, settings):
+    challenge = api_client.post(reverse("accounts:register"), REGISTER_DATA).data
+    OTP.objects.update(created_at=timezone.now() - timedelta(seconds=settings.OTP_RESEND_COOLDOWN_SECONDS))
+
+    response = api_client.post(reverse("accounts:otp-resend"), {"verification_id": challenge["verification_id"]})
+
+    assert response.status_code == 200
+    assert response.data["verification_id"] != challenge["verification_id"]
+    assert len(mail.outbox) == 2
+    assert verify(api_client, challenge["verification_id"], last_code()).status_code == 400
+    assert verify(api_client, response.data["verification_id"], last_code()).status_code == 200
+
+
+def test_login_with_unverified_email_requires_otp(api_client, password):
+    user = UserFactory(is_email_verified=False)
+
+    response = login(api_client, user, password)
+
+    assert response.status_code == 200
+    assert response.data["requires_otp"] is True
+    assert response.data["purpose"] == OTP.Purpose.EMAIL_VERIFICATION
+    assert "tokens" not in response.data
+
+
+def test_login_without_two_factor_returns_tokens(api_client, user, password):
+    response = login(api_client, user, password)
+
+    assert "tokens" in response.data
+    assert len(mail.outbox) == 0
+
+
+def test_login_with_two_factor_requires_otp(api_client, password):
+    user = UserFactory(two_factor_enabled=True)
+
+    challenge = login(api_client, user, password)
+    assert challenge.data["requires_otp"] is True
+    assert challenge.data["purpose"] == OTP.Purpose.LOGIN
+    assert "tokens" not in challenge.data
+
+    response = verify(api_client, challenge.data["verification_id"], last_code())
+    assert response.status_code == 200
+    assert response.data["user"]["id"] == user.id
+
+
+def test_user_can_enable_two_factor(auth_client):
+    response = auth_client.patch(reverse("accounts:me"), {"two_factor_enabled": True})
+
+    assert response.status_code == 200
+    auth_client.user.refresh_from_db()
+    assert auth_client.user.two_factor_enabled

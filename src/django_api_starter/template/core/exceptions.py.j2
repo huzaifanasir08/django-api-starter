@@ -1,0 +1,50 @@
+"""Consistent error responses for every API endpoint.
+
+Every error has the shape::
+
+    {"message": "Human readable summary.", "code": "machine_code", "errors": {...}}
+
+``errors`` holds per-field messages and is only present for validation errors.
+"""
+
+from rest_framework import exceptions
+from rest_framework.views import exception_handler as drf_exception_handler
+
+
+def exception_handler(exc, context):
+    response = drf_exception_handler(exc, context)
+    if response is None:
+        return None  # Unhandled: Django returns a 500.
+
+    if isinstance(exc, exceptions.ValidationError):
+        response.data = {
+            "message": _first_message(response.data) or "Invalid input.",
+            "code": "invalid",
+            "errors": response.data,
+        }
+        return response
+
+    data = response.data if isinstance(response.data, dict) else {"detail": response.data}
+    detail = data.get("detail", "An error occurred.")
+    response.data = {
+        "message": str(detail),
+        "code": data.get("code") or getattr(detail, "code", None) or getattr(exc, "default_code", "error"),
+    }
+    return response
+
+
+def _first_message(errors):
+    """Return the first error message found in a nested DRF error structure."""
+    if isinstance(errors, dict):
+        for value in errors.values():
+            message = _first_message(value)
+            if message:
+                return message
+    elif isinstance(errors, list):
+        for value in errors:
+            message = _first_message(value)
+            if message:
+                return message
+    elif errors:
+        return str(errors)
+    return None

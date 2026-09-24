@@ -1,0 +1,156 @@
+import uuid
+from pathlib import Path
+{% if two_factor %}
+import secrets
+from datetime import timedelta
+
+from django.conf import settings
+{% endif %}
+from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
+from django.db import models
+from django.utils import timezone
+{% if two_factor %}
+from django.utils.crypto import constant_time_compare, salted_hmac
+{% endif %}
+
+
+def profile_picture_path(instance, filename):
+    """Store uploads under a random name so users can't overwrite each other's files."""
+    return f"profile_pictures/{uuid.uuid4().hex}{Path(filename).suffix.lower()}"
+
+
+class UserManager(BaseUserManager):
+    use_in_migrations = True
+
+    def _create_user(self, email, password, **extra_fields):
+        if not email:
+            raise ValueError("An email address is required.")
+        user = self.model(email=self.normalize_email(email).lower(), **extra_fields)
+        user.set_password(password)
+        user.save(using=self._db)
+        return user
+
+    def create_user(self, email, password=None, **extra_fields):
+        extra_fields.setdefault("is_staff", False)
+        extra_fields.setdefault("is_superuser", False)
+        return self._create_user(email, password, **extra_fields)
+
+    def create_superuser(self, email, password=None, **extra_fields):
+        extra_fields.setdefault("is_staff", True)
+        extra_fields.setdefault("is_superuser", True)
+        extra_fields.setdefault("role", User.Role.ADMIN)
+{% if two_factor %}
+        extra_fields.setdefault("is_email_verified", True)
+{% endif %}
+        if extra_fields["is_staff"] is not True or extra_fields["is_superuser"] is not True:
+            raise ValueError("A superuser must have is_staff=True and is_superuser=True.")
+        return self._create_user(email, password, **extra_fields)
+
+
+class User(AbstractBaseUser, PermissionsMixin):
+    """Application user, identified by email. The password is hashed by AbstractBaseUser."""
+
+    class Role(models.TextChoices):
+        ADMIN = "admin", "Admin"
+        USER = "user", "User"
+
+    email = models.EmailField(unique=True)
+    name = models.CharField(max_length=150)
+    phone = models.CharField(max_length=30, blank=True)
+    profile_picture = models.ImageField(upload_to=profile_picture_path, blank=True, null=True)
+    role = models.CharField(max_length=20, choices=Role.choices, default=Role.USER)
+
+    # Inactive users cannot log in and their existing access tokens are rejected.
+    is_active = models.BooleanField(default=True)
+    # Access to the Django admin site; independent of `role`.
+    is_staff = models.BooleanField(default=False)
+{% if two_factor %}
+    is_email_verified = models.BooleanField(default=False)
+    two_factor_enabled = models.BooleanField(
+        default=False,
+        help_text="Require an emailed one-time code on every login.",
+    )
+{% endif %}
+
+    date_joined = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = UserManager()
+
+    USERNAME_FIELD = "email"
+    EMAIL_FIELD = "email"
+    REQUIRED_FIELDS = ["name"]
+
+    class Meta:
+        ordering = ["-date_joined"]
+
+    def __str__(self):
+        return self.email
+
+    @property
+    def is_admin(self):
+        return self.role == self.Role.ADMIN or self.is_superuser
+{% if two_factor %}
+
+
+class OTP(models.Model):
+    """A one-time code emailed to a user.
+
+    Only a keyed hash of the code is stored. The row's UUID is handed to the client
+    as ``verification_id`` so the code can be verified without re-sending credentials.
+    """
+
+    class Purpose(models.TextChoices):
+        EMAIL_VERIFICATION = "email_verification", "Email verification"
+        LOGIN = "login", "Login"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="otps")
+    purpose = models.CharField(max_length=30, choices=Purpose.choices)
+    code_hash = models.CharField(max_length=128)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "OTP"
+        verbose_name_plural = "OTPs"
+
+    def __str__(self):
+        return f"{self.get_purpose_display()} code for {self.user}"
+
+    @classmethod
+    def issue(cls, user, purpose):
+        """Create a new code for ``user``, replacing any pending one. Returns ``(otp, code)``."""
+        cls.objects.filter(user=user, purpose=purpose, used_at__isnull=True).delete()
+        code = "".join(secrets.choice("0123456789") for _ in range(settings.OTP_LENGTH))
+        otp = cls(
+            user=user,
+            purpose=purpose,
+            expires_at=timezone.now() + timedelta(minutes=settings.OTP_EXPIRY_MINUTES),
+        )
+        otp.code_hash = otp._hash(code)
+        otp.save()
+        return otp, code
+
+    @property
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+    @property
+    def attempts_exhausted(self):
+        return self.attempts >= settings.OTP_MAX_ATTEMPTS
+
+    def check_code(self, code):
+        """Verify ``code``. On success mark the OTP used; on failure count the attempt."""
+        if not constant_time_compare(self._hash(code), self.code_hash):
+            OTP.objects.filter(pk=self.pk).update(attempts=models.F("attempts") + 1)
+            return False
+        # The conditional update makes a code single-use even under concurrent requests.
+        return bool(OTP.objects.filter(pk=self.pk, used_at__isnull=True).update(used_at=timezone.now()))
+
+    def _hash(self, code):
+        return salted_hmac("accounts.OTP", f"{self.pk}:{code}", algorithm="sha256").hexdigest()
+{% endif %}

@@ -1,0 +1,76 @@
+import io
+
+import pytest
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.urls import reverse
+from PIL import Image
+
+from core.factories import UserFactory
+
+pytestmark = pytest.mark.django_db
+
+
+def test_me_requires_authentication(api_client):
+    response = api_client.get(reverse("accounts:me"))
+
+    assert response.status_code == 401
+    assert response.data["code"] == "not_authenticated"
+
+
+def test_get_me(auth_client):
+    response = auth_client.get(reverse("accounts:me"))
+
+    assert response.status_code == 200
+    assert response.data["email"] == auth_client.user.email
+    assert "password" not in response.data
+
+
+def test_update_me(auth_client):
+    response = auth_client.patch(reverse("accounts:me"), {"name": "New Name", "phone": "+15550199"})
+
+    assert response.status_code == 200
+    auth_client.user.refresh_from_db()
+    assert auth_client.user.name == "New Name"
+    assert auth_client.user.phone == "+15550199"
+
+
+def test_update_me_cannot_change_protected_fields(auth_client):
+    original_email = auth_client.user.email
+
+    auth_client.patch(reverse("accounts:me"), {"email": "new@example.com", "role": "admin", "is_active": False})
+
+    auth_client.user.refresh_from_db()
+    assert auth_client.user.email == original_email
+    assert auth_client.user.role == "user"
+    assert auth_client.user.is_active
+
+
+def test_upload_profile_picture(auth_client, settings, tmp_path):
+    settings.MEDIA_ROOT = tmp_path
+    buffer = io.BytesIO()
+    Image.new("RGB", (10, 10)).save(buffer, format="PNG")
+    picture = SimpleUploadedFile("me.png", buffer.getvalue(), content_type="image/png")
+
+    response = auth_client.patch(reverse("accounts:me"), {"profile_picture": picture}, format="multipart")
+
+    assert response.status_code == 200
+    assert response.data["profile_picture"].endswith(".png")
+
+
+def test_user_list_is_admin_only(auth_client):
+    response = auth_client.get(reverse("accounts:user-list"))
+
+    assert response.status_code == 403
+
+
+def test_admin_can_list_and_deactivate_users(admin_client):
+    target = UserFactory()
+
+    listing = admin_client.get(reverse("accounts:user-list"))
+    assert listing.status_code == 200
+    assert listing.data["count"] == 2
+
+    response = admin_client.patch(reverse("accounts:user-detail", args=[target.pk]), {"is_active": False})
+    assert response.status_code == 200
+    target.refresh_from_db()
+    assert not target.is_active

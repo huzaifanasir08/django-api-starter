@@ -1,0 +1,24 @@
+FROM python:3.13-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# production.txt for deployments; docker-compose builds with development.txt.
+ARG REQUIREMENTS=production.txt
+COPY requirements/ requirements/
+RUN pip install -r requirements/${REQUIREMENTS}
+
+COPY . .
+
+RUN addgroup --system app && adduser --system --ingroup app app \
+    && mkdir -p /app/media /app/staticfiles && chown -R app:app /app/media /app/staticfiles
+USER app
+
+ENV DJANGO_SETTINGS_MODULE=conf.settings.production
+RUN SECRET_KEY=build-only ALLOWED_HOSTS=* python manage.py collectstatic --noinput
+
+EXPOSE 8000
+CMD ["gunicorn", "conf.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]

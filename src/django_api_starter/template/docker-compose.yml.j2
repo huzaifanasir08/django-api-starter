@@ -1,0 +1,45 @@
+# Local development: code is mounted into the container and reloads on change.
+services:
+  web:
+    build:
+      context: .
+      args:
+        REQUIREMENTS: development.txt
+    command: >
+      sh -c "python manage.py wait_for_db &&
+             python manage.py migrate &&
+             python manage.py runserver 0.0.0.0:8000"
+    env_file: .env
+    environment:
+      DJANGO_SETTINGS_MODULE: conf.settings.development
+{% if database == "postgres" %}
+      DATABASE_URL: postgres://postgres:postgres@db:5432/{{ slug }}
+{% endif %}
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+{% if database == "postgres" %}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: {{ slug }}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d {{ slug }}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+{% endif %}

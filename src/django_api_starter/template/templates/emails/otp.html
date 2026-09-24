@@ -1,0 +1,9 @@
+<!DOCTYPE html>
+<html>
+  <body style="font-family: Arial, sans-serif; color: #1f2933; line-height: 1.5;">
+    <p>Hi {{ user.name }},</p>
+    <p>Your {{ purpose|lower }} code is:</p>
+    <p style="font-size: 28px; font-weight: bold; letter-spacing: 6px;">{{ code }}</p>
+    <p>It expires in {{ expiry_minutes }} minutes. If you didn't request it, you can ignore this email.</p>
+  </body>
+</html>

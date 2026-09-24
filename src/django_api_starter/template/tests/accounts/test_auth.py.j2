@@ -1,0 +1,127 @@
+import pytest
+from django.urls import reverse
+
+from apps.accounts.models import User
+from core.factories import UserFactory
+
+pytestmark = pytest.mark.django_db
+
+REGISTER_DATA = {
+    "name": "Jane Doe",
+    "email": "Jane@Example.com",
+    "phone": "+15550100",
+    "password": "Sup3r-Secret-pass",
+    "password_confirm": "Sup3r-Secret-pass",
+}
+
+
+def test_register_creates_user(api_client):
+    response = api_client.post(reverse("accounts:register"), REGISTER_DATA)
+
+    assert response.status_code == 201
+    user = User.objects.get()
+    assert user.email == "jane@example.com"
+    assert user.role == User.Role.USER
+    assert user.check_password(REGISTER_DATA["password"])
+{% if two_factor %}
+    assert not user.is_email_verified
+    assert response.data["requires_otp"] is True
+    assert "tokens" not in response.data
+{% else %}
+    assert set(response.data["tokens"]) == {"access", "refresh"}
+    assert response.data["user"]["email"] == "jane@example.com"
+{% endif %}
+
+
+def test_register_rejects_duplicate_email_case_insensitively(api_client, user):
+    response = api_client.post(reverse("accounts:register"), {**REGISTER_DATA, "email": user.email.upper()})
+
+    assert response.status_code == 400
+    assert "email" in response.data["errors"]
+
+
+def test_register_rejects_mismatched_passwords(api_client):
+    response = api_client.post(reverse("accounts:register"), {**REGISTER_DATA, "password_confirm": "different"})
+
+    assert response.status_code == 400
+    assert "password_confirm" in response.data["errors"]
+
+
+def test_register_rejects_weak_password(api_client):
+    response = api_client.post(
+        reverse("accounts:register"), {**REGISTER_DATA, "password": "123", "password_confirm": "123"}
+    )
+
+    assert response.status_code == 400
+    assert "password" in response.data["errors"]
+
+
+def test_register_ignores_role(api_client):
+    api_client.post(reverse("accounts:register"), {**REGISTER_DATA, "role": "admin"})
+
+    assert User.objects.get().role == User.Role.USER
+
+
+def test_login_returns_tokens(api_client, user, password):
+    response = api_client.post(reverse("accounts:login"), {"email": user.email, "password": password})
+
+    assert response.status_code == 200
+    assert set(response.data["tokens"]) == {"access", "refresh"}
+    assert response.data["user"]["id"] == user.id
+
+
+def test_login_rejects_wrong_password(api_client, user):
+    response = api_client.post(reverse("accounts:login"), {"email": user.email, "password": "wrong"})
+
+    assert response.status_code == 400
+    assert response.data["message"] == "Invalid email or password."
+
+
+def test_login_rejects_inactive_user(api_client, password):
+    user = UserFactory(is_active=False)
+
+    response = api_client.post(reverse("accounts:login"), {"email": user.email, "password": password})
+
+    assert response.status_code == 400
+
+
+def test_refresh_rotates_token(api_client, user, password):
+    tokens = api_client.post(reverse("accounts:login"), {"email": user.email, "password": password}).data["tokens"]
+
+    response = api_client.post(reverse("accounts:token-refresh"), {"refresh": tokens["refresh"]})
+    assert response.status_code == 200
+    assert response.data["refresh"] != tokens["refresh"]
+
+    # The old refresh token was blacklisted by the rotation.
+    reused = api_client.post(reverse("accounts:token-refresh"), {"refresh": tokens["refresh"]})
+    assert reused.status_code == 401
+
+
+def test_logout_blacklists_refresh_token(api_client, user, password):
+    tokens = api_client.post(reverse("accounts:login"), {"email": user.email, "password": password}).data["tokens"]
+    api_client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens['access']}")
+
+    response = api_client.post(reverse("accounts:logout"), {"refresh": tokens["refresh"]})
+
+    assert response.status_code == 204
+    refresh = api_client.post(reverse("accounts:token-refresh"), {"refresh": tokens["refresh"]})
+    assert refresh.status_code == 401
+
+
+def test_logout_rejects_another_users_token(auth_client, password):
+    other = UserFactory()
+    other_refresh = auth_client.post(
+        reverse("accounts:login"), {"email": other.email, "password": password}
+    ).data["tokens"]["refresh"]
+
+    response = auth_client.post(reverse("accounts:logout"), {"refresh": other_refresh})
+
+    assert response.status_code == 400
+
+
+def test_inactive_users_access_token_is_rejected(auth_client):
+    User.objects.filter(pk=auth_client.user.pk).update(is_active=False)
+
+    response = auth_client.get(reverse("accounts:me"))
+
+    assert response.status_code == 401

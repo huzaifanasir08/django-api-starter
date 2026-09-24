@@ -1,0 +1,26 @@
+import time
+
+from django.core.management.base import BaseCommand, CommandError
+from django.db import connection
+from django.db.utils import OperationalError
+
+
+class Command(BaseCommand):
+    help = "Wait until the database accepts connections (useful when starting containers)."
+
+    def add_arguments(self, parser):
+        parser.add_argument("--timeout", type=int, default=60, help="Seconds to wait before failing.")
+
+    def handle(self, *args, timeout, **options):
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                connection.ensure_connection()
+            except OperationalError:
+                if time.monotonic() > deadline:
+                    raise CommandError(f"Database unavailable after {timeout} seconds.")
+                self.stdout.write("Waiting for database...")
+                time.sleep(1)
+            else:
+                self.stdout.write(self.style.SUCCESS("Database available."))
+                return

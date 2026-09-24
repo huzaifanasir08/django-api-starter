@@ -1,0 +1,70 @@
+from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.contrib.auth.forms import AdminUserCreationForm, UserChangeForm
+
+{% if two_factor %}
+from .models import OTP, User
+{% else %}
+from .models import User
+{% endif %}
+
+
+class UserCreationForm(AdminUserCreationForm):
+    class Meta:
+        model = User
+        fields = ("email", "name")
+
+
+class UserEditForm(UserChangeForm):
+    class Meta:
+        model = User
+        fields = "__all__"
+
+
+@admin.register(User)
+class UserAdmin(BaseUserAdmin):
+    form = UserEditForm
+    add_form = UserCreationForm
+
+{% if two_factor %}
+    list_display = ("email", "name", "role", "is_active", "is_email_verified", "two_factor_enabled", "date_joined")
+    list_filter = ("role", "is_active", "is_staff", "is_email_verified", "two_factor_enabled")
+{% else %}
+    list_display = ("email", "name", "role", "is_active", "is_staff", "date_joined")
+    list_filter = ("role", "is_active", "is_staff")
+{% endif %}
+    search_fields = ("email", "name", "phone")
+    ordering = ("-date_joined",)
+    readonly_fields = ("date_joined", "last_login", "updated_at")
+
+    fieldsets = (
+        (None, {"fields": ("email", "password")}),
+        ("Profile", {"fields": ("name", "phone", "profile_picture", "role")}),
+{% if two_factor %}
+        ("Security", {"fields": ("is_email_verified", "two_factor_enabled")}),
+{% endif %}
+        ("Permissions", {"fields": ("is_active", "is_staff", "is_superuser", "groups", "user_permissions")}),
+        ("Dates", {"fields": ("date_joined", "last_login", "updated_at")}),
+    )
+    add_fieldsets = (
+        (
+            None,
+            {
+                "classes": ("wide",),
+                "fields": ("email", "name", "usable_password", "password1", "password2"),
+            },
+        ),
+    )
+{% if two_factor %}
+
+
+@admin.register(OTP)
+class OTPAdmin(admin.ModelAdmin):
+    list_display = ("user", "purpose", "attempts", "created_at", "expires_at", "used_at")
+    list_filter = ("purpose",)
+    search_fields = ("user__email",)
+    readonly_fields = [field.name for field in OTP._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+{% endif %}

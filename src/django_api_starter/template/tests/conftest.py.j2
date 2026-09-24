@@ -1,0 +1,48 @@
+import pytest
+from django.core.cache import cache
+from rest_framework.test import APIClient
+
+from core.auth import issue_tokens
+from core.factories import DEFAULT_PASSWORD, UserFactory
+
+
+@pytest.fixture(autouse=True)
+def _reset_throttles():
+    # Throttle counters live in the cache; don't let tests rate-limit each other.
+    cache.clear()
+
+
+@pytest.fixture
+def api_client():
+    return APIClient()
+
+
+@pytest.fixture
+def password():
+    return DEFAULT_PASSWORD
+
+
+@pytest.fixture
+def user(db):
+    return UserFactory()
+
+
+@pytest.fixture
+def admin_user(db):
+    return UserFactory(role="admin")
+
+
+@pytest.fixture
+def auth_client(user):
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {issue_tokens(user)['access']}")
+    client.user = user
+    return client
+
+
+@pytest.fixture
+def admin_client(admin_user):
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {issue_tokens(admin_user)['access']}")
+    client.user = admin_user
+    return client

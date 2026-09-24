@@ -1,0 +1,197 @@
+from django.contrib.auth import authenticate, password_validation
+from django.contrib.auth.tokens import default_token_generator
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.utils.encoding import force_str
+from django.utils.http import urlsafe_base64_decode
+from rest_framework import serializers
+
+{% if two_factor %}
+from .models import OTP, User
+{% else %}
+from .models import User
+{% endif %}
+
+
+class UserSerializer(serializers.ModelSerializer):
+    """The authenticated user's own profile (``/auth/me/``)."""
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "email",
+            "name",
+            "phone",
+            "profile_picture",
+            "role",
+            "is_active",
+{% if two_factor %}
+            "is_email_verified",
+            "two_factor_enabled",
+{% endif %}
+            "date_joined",
+            "last_login",
+        ]
+        read_only_fields = [
+            "id",
+            "email",
+            "role",
+            "is_active",
+{% if two_factor %}
+            "is_email_verified",
+{% endif %}
+            "date_joined",
+            "last_login",
+        ]
+
+
+class AdminUserSerializer(UserSerializer):
+    """Admins can additionally change a user's role and active status."""
+
+    class Meta(UserSerializer.Meta):
+        read_only_fields = [f for f in UserSerializer.Meta.read_only_fields if f not in ("role", "is_active")]
+
+
+class PasswordConfirmationMixin:
+    """Validates ``password``/``password_confirm`` against Django's password validators."""
+
+    password_field = "password"
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        password = attrs[self.password_field]
+        if password != attrs.pop(f"{self.password_field}_confirm"):
+            raise serializers.ValidationError({f"{self.password_field}_confirm": "Passwords do not match."})
+        try:
+            password_validation.validate_password(password, user=self.get_password_user(attrs))
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({self.password_field: list(exc.messages)}) from exc
+        return attrs
+
+    def get_password_user(self, attrs):
+        return None
+
+
+class RegisterSerializer(PasswordConfirmationMixin, serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, style={"input_type": "password"})
+    password_confirm = serializers.CharField(write_only=True, style={"input_type": "password"})
+
+    class Meta:
+        model = User
+        fields = ["name", "email", "phone", "password", "password_confirm"]
+        extra_kwargs = {"email": {"validators": []}}  # uniqueness checked case-insensitively below
+
+    def validate_email(self, value):
+        value = value.lower()
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("An account with this email already exists.")
+        return value
+
+    def get_password_user(self, attrs):
+        return User(email=attrs.get("email"), name=attrs.get("name"))
+
+    def create(self, validated_data):
+        return User.objects.create_user(**validated_data)
+
+
+class LoginSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, style={"input_type": "password"})
+
+    def validate(self, attrs):
+        user = authenticate(
+            self.context.get("request"),
+            email=attrs["email"].lower(),
+            password=attrs["password"],
+        )
+        # authenticate() returns None for wrong credentials *and* inactive users;
+        # both get the same message so accounts can't be probed.
+        if user is None:
+            raise serializers.ValidationError("Invalid email or password.", code="authentication_failed")
+        attrs["user"] = user
+        return attrs
+
+
+class LogoutSerializer(serializers.Serializer):
+    refresh = serializers.CharField()
+
+
+class ChangePasswordSerializer(PasswordConfirmationMixin, serializers.Serializer):
+    password_field = "new_password"
+
+    current_password = serializers.CharField(write_only=True, style={"input_type": "password"})
+    new_password = serializers.CharField(write_only=True, style={"input_type": "password"})
+    new_password_confirm = serializers.CharField(write_only=True, style={"input_type": "password"})
+
+    def validate_current_password(self, value):
+        if not self.context["request"].user.check_password(value):
+            raise serializers.ValidationError("Current password is incorrect.")
+        return value
+
+    def get_password_user(self, attrs):
+        return self.context["request"].user
+
+
+class PasswordResetSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+
+class PasswordResetConfirmSerializer(PasswordConfirmationMixin, serializers.Serializer):
+    password_field = "new_password"
+
+    uid = serializers.CharField()
+    token = serializers.CharField()
+    new_password = serializers.CharField(write_only=True, style={"input_type": "password"})
+    new_password_confirm = serializers.CharField(write_only=True, style={"input_type": "password"})
+
+    def validate(self, attrs):
+        try:
+            user = User.objects.get(pk=force_str(urlsafe_base64_decode(attrs["uid"])), is_active=True)
+        except (User.DoesNotExist, ValueError, TypeError, OverflowError):
+            user = None
+        if user is None or not default_token_generator.check_token(user, attrs["token"]):
+            raise serializers.ValidationError("This password reset link is invalid or has expired.")
+        attrs["user"] = user
+        return super().validate(attrs)
+
+    def get_password_user(self, attrs):
+        return attrs["user"]
+{% if two_factor %}
+
+
+class VerifyOTPSerializer(serializers.Serializer):
+    verification_id = serializers.UUIDField()
+    code = serializers.CharField(max_length=12)
+
+    def validate(self, attrs):
+        otp = (
+            OTP.objects.select_related("user")
+            .filter(pk=attrs["verification_id"], used_at__isnull=True, user__is_active=True)
+            .first()
+        )
+        if otp is None:
+            raise serializers.ValidationError("This verification is invalid or was already used.")
+        if otp.is_expired:
+            raise serializers.ValidationError("This code has expired. Request a new one.", code="otp_expired")
+        if otp.attempts_exhausted:
+            raise serializers.ValidationError("Too many incorrect attempts. Request a new code.", code="otp_locked")
+        if not otp.check_code(attrs["code"]):
+            raise serializers.ValidationError({"code": "Incorrect code."})
+        attrs["otp"] = otp
+        return attrs
+
+
+class ResendOTPSerializer(serializers.Serializer):
+    verification_id = serializers.UUIDField()
+
+    def validate(self, attrs):
+        otp = (
+            OTP.objects.select_related("user")
+            .filter(pk=attrs["verification_id"], used_at__isnull=True, user__is_active=True)
+            .first()
+        )
+        if otp is None:
+            raise serializers.ValidationError("This verification is invalid or was already used.")
+        attrs["otp"] = otp
+        return attrs
+{% endif %}

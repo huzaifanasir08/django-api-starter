@@ -1,0 +1,21 @@
+"""JWT helpers shared by the authentication views."""
+
+from django.contrib.auth.models import update_last_login
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
+from rest_framework_simplejwt.tokens import RefreshToken
+
+
+def issue_tokens(user):
+    """Return a fresh access/refresh token pair for ``user``."""
+    refresh = RefreshToken.for_user(user)
+    update_last_login(None, user)
+    return {"access": str(refresh.access_token), "refresh": str(refresh)}
+
+
+def revoke_all_tokens(user):
+    """Blacklist every refresh token issued to ``user`` (e.g. after a password change).
+
+    Access tokens stay valid until they expire, so keep their lifetime short.
+    """
+    for token in OutstandingToken.objects.filter(user=user):
+        BlacklistedToken.objects.get_or_create(token=token)

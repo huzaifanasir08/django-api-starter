@@ -1,0 +1,20 @@
+from rest_framework.permissions import BasePermission
+
+
+class IsAdmin(BasePermission):
+    """Users with the admin role (or Django superusers)."""
+
+    message = "You must be an administrator to perform this action."
+
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated and request.user.is_admin)
+
+
+class IsOwnerOrAdmin(BasePermission):
+    """Object-level: the object's owner (``obj.user`` or the user itself) or an admin."""
+
+    def has_object_permission(self, request, view, obj):
+        if request.user.is_admin:
+            return True
+        owner = getattr(obj, "user", obj)
+        return owner == request.user

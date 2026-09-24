@@ -1,0 +1,12 @@
+import os
+
+from .base import *  # noqa: F403
+
+DEBUG = True
+ALLOWED_HOSTS = ["*"]
+
+CORS_ALLOW_ALL_ORIGINS = True
+
+# Print emails (OTP codes, reset links) to the console unless EMAIL_BACKEND is set.
+if "EMAIL_BACKEND" not in os.environ:
+    MAILERS = {"default": {"BACKEND": "django.core.mail.backends.console.EmailBackend"}}
