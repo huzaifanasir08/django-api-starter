@@ -13,6 +13,7 @@ htmlcov/
 db.sqlite3
 media/
 staticfiles/
+celerybeat-schedule*
 
 # Editors / OS
 .idea/

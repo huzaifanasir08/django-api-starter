@@ -1,0 +1,19 @@
+"""Celery application.
+
+Start a worker with ``celery -A conf worker -l info`` (add ``--pool=solo`` on
+Windows) and the scheduler with ``celery -A conf beat -l info``.
+"""
+
+import os
+
+from celery import Celery
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "conf.settings.development")
+
+app = Celery("{{ slug }}")
+
+# Every setting prefixed with CELERY_ in Django settings configures Celery.
+app.config_from_object("django.conf:settings", namespace="CELERY")
+
+# Load tasks.py from every installed app.
+app.autodiscover_tasks()

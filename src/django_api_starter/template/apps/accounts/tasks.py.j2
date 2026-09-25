@@ -1,0 +1,25 @@
+"""Scheduled clean-up tasks. The schedule is CELERY_BEAT_SCHEDULE in conf/settings/base.py."""
+
+from celery import shared_task
+from django.core.management import call_command
+{% if two_factor %}
+from django.db.models import Q
+from django.utils import timezone
+
+from .models import OTP
+{% endif %}
+
+
+@shared_task
+def flush_expired_tokens():
+    """Delete expired refresh tokens from the blacklist tables."""
+    call_command("flushexpiredtokens")
+{% if two_factor %}
+
+
+@shared_task
+def delete_stale_otps():
+    """Delete one-time codes that were used or have expired. Returns how many were deleted."""
+    deleted, _ = OTP.objects.filter(Q(used_at__isnull=False) | Q(expires_at__lt=timezone.now())).delete()
+    return deleted
+{% endif %}

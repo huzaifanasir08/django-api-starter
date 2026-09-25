@@ -1,28 +1,53 @@
-# Local development: code is mounted into the container and reloads on change.
+# Local development: code is mounted into the containers and the web server reloads on change.
+{% set needs_db = database == "postgres" %}
+x-app: &app
+  build:
+    context: .
+    args:
+      REQUIREMENTS: development.txt
+  env_file: .env
+  environment:
+    DJANGO_SETTINGS_MODULE: conf.settings.development
+{% if needs_db %}
+    DATABASE_URL: postgres://postgres:postgres@db:5432/{{ slug }}
+{% endif %}
+{% if celery %}
+    REDIS_URL: redis://redis:6379/0
+{% endif %}
+  volumes:
+    - .:/app
+{% if needs_db or celery %}
+  depends_on:
+{% if needs_db %}
+    db:
+      condition: service_healthy
+{% endif %}
+{% if celery %}
+    redis:
+      condition: service_healthy
+{% endif %}
+{% endif %}
+
 services:
   web:
-    build:
-      context: .
-      args:
-        REQUIREMENTS: development.txt
+    <<: *app
     command: >
       sh -c "python manage.py wait_for_db &&
              python manage.py migrate &&
              python manage.py runserver 0.0.0.0:8000"
-    env_file: .env
-    environment:
-      DJANGO_SETTINGS_MODULE: conf.settings.development
-{% if database == "postgres" %}
-      DATABASE_URL: postgres://postgres:postgres@db:5432/{{ slug }}
-{% endif %}
     ports:
       - "8000:8000"
-    volumes:
-      - .:/app
-{% if database == "postgres" %}
-    depends_on:
-      db:
-        condition: service_healthy
+{% if celery %}
+
+  worker:
+    <<: *app
+    command: celery -A conf worker -l info
+
+  beat:
+    <<: *app
+    command: celery -A conf beat -l info --schedule /tmp/celerybeat-schedule
+{% endif %}
+{% if needs_db %}
 
   db:
     image: postgres:17-alpine
@@ -39,7 +64,28 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+{% endif %}
+{% if celery %}
+
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+{% endif %}
+{% if needs_db or celery %}
 
 volumes:
+{% if needs_db %}
   postgres_data:
+{% endif %}
+{% if celery %}
+  redis_data:
+{% endif %}
 {% endif %}

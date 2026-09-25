@@ -1,0 +1,20 @@
+from celery import shared_task
+from django.conf import settings
+from django.core.mail import EmailMultiAlternatives
+
+
+@shared_task(
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 5},
+)
+def send_email(*, to, subject, text_body, html_body):
+    """Send an already-rendered email, retrying if the mail server fails."""
+    message = EmailMultiAlternatives(
+        subject=subject,
+        body=text_body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=to,
+    )
+    message.attach_alternative(html_body, "text/html")
+    message.send()

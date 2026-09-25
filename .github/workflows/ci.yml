@@ -31,11 +31,11 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install -e ".[dev]"
-      # Install the dependencies a generated project uses (API docs on, SQLite).
+      # Install the dependencies a generated project uses (API docs and Celery on, SQLite).
       - run: |
-          django-starter new deps "$RUNNER_TEMP/deps" --database sqlite -y
+          django-starter new deps "$RUNNER_TEMP/deps" --database sqlite --celery -y
           pip install -r "$RUNNER_TEMP/deps/requirements/development.txt"
-      # Generates projects with and without 2FA and runs their migration check,
+      # Generates projects with and without 2FA and Celery, and runs their migration check,
       # OpenAPI validation and test suites.
       - run: pytest -v -k generated_project
 

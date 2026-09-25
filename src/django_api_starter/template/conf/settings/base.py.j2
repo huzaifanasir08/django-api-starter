@@ -192,6 +192,48 @@ SPECTACULAR_SETTINGS = {
     "COMPONENT_SPLIT_REQUEST": True,
 }
 {% endif %}
+{% if celery %}
+
+
+# Redis: cache (shared rate-limit counters) and Celery broker
+
+REDIS_URL = env("REDIS_URL", default="redis://localhost:6379/0")
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": REDIS_URL,
+    },
+}
+
+
+# Celery
+
+CELERY_BROKER_URL = env("CELERY_BROKER_URL", default=REDIS_URL)
+CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default=REDIS_URL)
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_RESULT_EXPIRES = timedelta(days=1)
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_TIME_LIMIT = 5 * 60
+CELERY_TASK_SOFT_TIME_LIMIT = 4 * 60
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+
+CELERY_BEAT_SCHEDULE = {
+    "flush-expired-tokens": {
+        "task": "apps.accounts.tasks.flush_expired_tokens",
+        "schedule": timedelta(days=1),
+    },
+{% if two_factor %}
+    "delete-stale-otps": {
+        "task": "apps.accounts.tasks.delete_stale_otps",
+        "schedule": timedelta(hours=1),
+    },
+{% endif %}
+}
+{% endif %}
 
 
 # CORS

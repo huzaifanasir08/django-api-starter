@@ -106,6 +106,44 @@ def test_two_factor_on(tmp_path):
     assert "otp/verify" in (target / "apps/accounts/urls.py").read_text(encoding="utf-8")
 
 
+def test_celery_off(tmp_path):
+    target = generate(tmp_path, celery=False)
+
+    for path in ("conf/celery.py", "core/tasks.py", "apps/accounts/tasks.py", "tests/accounts/test_tasks.py"):
+        assert not (target / path).exists(), path
+    assert (target / "conf/__init__.py").read_text(encoding="utf-8").strip() == ""
+    assert "celery" not in (target / "requirements/base.txt").read_text(encoding="utf-8")
+    assert "CELERY" not in (target / "conf/settings/base.py").read_text(encoding="utf-8")
+
+
+def test_celery_on(tmp_path):
+    target = generate(tmp_path, celery=True, docker=True)
+
+    for path in ("conf/celery.py", "core/tasks.py", "apps/accounts/tasks.py", "tests/accounts/test_tasks.py"):
+        assert (target / path).exists(), path
+    assert "celery_app" in (target / "conf/__init__.py").read_text(encoding="utf-8")
+    assert "celery[redis]" in (target / "requirements/base.txt").read_text(encoding="utf-8")
+    assert "RedisCache" in (target / "conf/settings/base.py").read_text(encoding="utf-8")
+    assert "REDIS_URL=" in (target / ".env.example").read_text(encoding="utf-8")
+    compose = (target / "docker-compose.yml").read_text(encoding="utf-8")
+    for service in ("worker:", "beat:", "redis:"):
+        assert service in compose
+
+
+@pytest.mark.parametrize("database", ["postgres", "sqlite"])
+@pytest.mark.parametrize("celery", [False, True])
+def test_docker_compose_is_valid_yaml(tmp_path, database, celery):
+    yaml = pytest.importorskip("yaml")
+    target = generate(tmp_path, database=database, celery=celery, docker=True)
+
+    compose = yaml.safe_load((target / "docker-compose.yml").read_text(encoding="utf-8"))
+
+    services = set(compose["services"])
+    expected = {"web"} | ({"db"} if database == "postgres" else set()) | ({"redis", "worker", "beat"} if celery else set())
+    assert services == expected
+    assert compose["services"]["web"]["environment"]["DJANGO_SETTINGS_MODULE"] == "conf.settings.development"
+
+
 def test_docker_toggle(tmp_path):
     with_docker = generate(tmp_path / "a", docker=True)
     without_docker = generate(tmp_path / "b", docker=False)
@@ -160,12 +198,17 @@ def test_rejects_invalid_names(name):
 def test_cli_non_interactive(tmp_path, capsys):
     target = tmp_path / "cli-project"
 
-    exit_code = main(["new", "cli-project", str(target), "--2fa", "--no-docker", "--database", "sqlite", "-y"])
+    exit_code = main(
+        ["new", "cli-project", str(target), "--2fa", "--celery", "--no-docker", "--database", "sqlite", "-y"]
+    )
 
     assert exit_code == 0
     assert (target / "apps/accounts/models.py").exists()
+    assert (target / "conf/celery.py").exists()
     assert not (target / "Dockerfile").exists()
-    assert "Email OTP / 2FA yes" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Email OTP / 2FA yes" in output
+    assert "Celery + Redis  yes" in output
 
 
 def test_cli_reports_errors(tmp_path, capsys):
@@ -186,10 +229,22 @@ DJANGO_INSTALLED = all(
 )
 
 
+CELERY_INSTALLED = all(importlib.util.find_spec(module) for module in ("celery", "redis"))
+
+
 @pytest.mark.skipif(not DJANGO_INSTALLED, reason="generated project's dependencies are not installed")
-@pytest.mark.parametrize("two_factor", [False, True], ids=["plain", "2fa"])
-def test_generated_project_passes_its_own_checks(tmp_path, two_factor):
-    target = generate(tmp_path, database="sqlite", two_factor=two_factor)
+@pytest.mark.parametrize(
+    "two_factor, celery",
+    [
+        (False, False),
+        (True, False),
+        pytest.param(False, True, marks=pytest.mark.skipif(not CELERY_INSTALLED, reason="celery not installed")),
+        pytest.param(True, True, marks=pytest.mark.skipif(not CELERY_INSTALLED, reason="celery not installed")),
+    ],
+    ids=["plain", "2fa", "celery", "2fa-celery"],
+)
+def test_generated_project_passes_its_own_checks(tmp_path, two_factor, celery):
+    target = generate(tmp_path, database="sqlite", two_factor=two_factor, celery=celery)
 
     def run(*args):
         result = subprocess.run([sys.executable, *args], cwd=target, capture_output=True, text=True)

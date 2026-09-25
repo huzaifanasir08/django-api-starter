@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "django-api-starter"
 dynamic = ["version"]  # read from src/django_api_starter/__init__.py
-description = "Generate a production-ready Django REST API project with a custom user, JWT auth and optional OTP 2FA."
+description = "Generate a production-ready Django REST API project with a custom user, JWT auth, optional email 2FA and Celery with Redis."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Huzaifa Nasir", email = "huzaifanasirbutt08@gmail.com" }]
-keywords = ["django", "django-rest-framework", "jwt", "starter", "template", "generator", "2fa"]
+keywords = ["django", "django-rest-framework", "jwt", "starter", "template", "generator", "2fa", "celery", "redis"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -19,6 +19,11 @@ classifiers = [
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Code Generators",
 ]
 dependencies = ["Jinja2>=3.1"]
@@ -28,7 +33,7 @@ Homepage = "https://github.com/huzaifanasir08/django-api-starter"
 Issues = "https://github.com/huzaifanasir08/django-api-starter/issues"
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "build", "twine"]
+dev = ["pytest>=8", "pyyaml", "build", "twine"]
 
 [project.scripts]
 django-starter = "django_api_starter.cli:main"

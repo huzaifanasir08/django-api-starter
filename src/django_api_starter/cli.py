@@ -26,6 +26,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--2fa", dest="two_factor", action=argparse.BooleanOptionalAction,
         help="Email OTP: verify email on signup and optional per-user two-factor login.",
     )
+    new.add_argument(
+        "--celery", action=argparse.BooleanOptionalAction,
+        help="Celery background tasks with Redis (also used as the cache).",
+    )
     new.add_argument("--docker", action=argparse.BooleanOptionalAction, help="Add Dockerfile and docker-compose.yml.")
     new.add_argument("--api-docs", action=argparse.BooleanOptionalAction, help="Add OpenAPI schema and Swagger UI.")
     new.add_argument(
@@ -47,6 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     options = {}
     for key, question in (
         ("two_factor", "Enable email OTP / two-factor authentication?"),
+        ("celery", "Add Celery background tasks with Redis?"),
         ("docker", "Add Docker support?"),
         ("api_docs", "Add API documentation (Swagger)?"),
     ):
@@ -95,6 +100,7 @@ def _print_summary(config: ProjectConfig, target: Path) -> None:
     print(f"\nCreated {config.name} in {target}\n")
     print(f"  Database        {config.database}")
     print(f"  Email OTP / 2FA {mark(config.two_factor)}")
+    print(f"  Celery + Redis  {mark(config.celery)}")
     print(f"  Docker          {mark(config.docker)}")
     print(f"  API docs        {mark(config.api_docs)}")
     print("\nNext steps:\n")
@@ -106,7 +112,12 @@ def _print_summary(config: ProjectConfig, target: Path) -> None:
     print("  pip install -r requirements/development.txt")
     if config.database == "postgres":
         print("  # point DATABASE_URL in .env at your PostgreSQL server")
+    if config.celery:
+        print("  # start Redis and point REDIS_URL in .env at it")
     print("  python manage.py migrate")
     print("  python manage.py createsuperuser")
     print("  python manage.py runserver")
+    if config.celery:
+        print("  celery -A conf worker -l info   (in a second terminal; add --pool=solo on Windows)")
+        print("  celery -A conf beat -l info     (in a third terminal, for scheduled tasks)")
     print()

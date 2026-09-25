@@ -1,0 +1,64 @@
+{% if two_factor %}
+from datetime import timedelta
+{% endif %}
+from unittest.mock import patch
+
+import pytest
+from django.core import mail
+{% if two_factor %}
+from django.utils import timezone
+{% endif %}
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
+
+{% if two_factor %}
+from apps.accounts.models import OTP
+from apps.accounts.tasks import delete_stale_otps, flush_expired_tokens
+{% else %}
+from apps.accounts.tasks import flush_expired_tokens
+{% endif %}
+from core.auth import issue_tokens
+from core.tasks import send_email
+from core.utils import send_templated_email
+
+pytestmark = pytest.mark.django_db
+
+
+def test_send_email_task():
+    send_email.delay(to=["jane@example.com"], subject="Hello", text_body="Hi", html_body="<p>Hi</p>")
+
+    assert len(mail.outbox) == 1
+    assert mail.outbox[0].to == ["jane@example.com"]
+    assert mail.outbox[0].alternatives[0].content == "<p>Hi</p>"
+
+
+def test_templated_email_is_sent_through_celery(user):
+    with patch("core.utils.send_email.delay") as delay:
+        send_templated_email(
+            to=user.email,
+            subject="Reset your password",
+            template="password_reset",
+            context={"user": user, "reset_url": "https://example.com/reset", "expiry_minutes": 60},
+        )
+
+    kwargs = delay.call_args.kwargs
+    assert kwargs["to"] == [user.email]
+    assert "https://example.com/reset" in kwargs["text_body"]
+
+
+def test_flush_expired_tokens_keeps_valid_tokens(user):
+    issue_tokens(user)
+
+    flush_expired_tokens.delay()
+
+    assert OutstandingToken.objects.filter(user=user).count() == 1
+{% if two_factor %}
+
+
+def test_delete_stale_otps(user):
+    pending, _ = OTP.issue(user, OTP.Purpose.LOGIN)
+    expired, _ = OTP.issue(user, OTP.Purpose.EMAIL_VERIFICATION)
+    OTP.objects.filter(pk=expired.pk).update(expires_at=timezone.now() - timedelta(minutes=1))
+
+    assert delete_stale_otps.delay().get() == 1
+    assert list(OTP.objects.values_list("pk", flat=True)) == [pending.pk]
+{% endif %}

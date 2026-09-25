@@ -10,3 +10,12 @@ REST_FRAMEWORK = {
         scope: "1000/min" for scope in REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]  # noqa: F405
     },
 }
+{% if celery %}
+
+# Tests don't need Redis: use an in-memory cache and run tasks immediately.
+CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+CELERY_TASK_ALWAYS_EAGER = True
+CELERY_TASK_EAGER_PROPAGATES = True
+CELERY_BROKER_URL = "memory://"
+CELERY_RESULT_BACKEND = "cache+memory://"
+{% endif %}

@@ -1,20 +1,36 @@
 import html
 
+{% if not celery %}
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
+{% endif %}
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
+{% if celery %}
+
+from core.tasks import send_email
+{% endif %}
 
 
 def send_templated_email(*, to, subject, template, context):
-    """Send ``templates/emails/<template>.html`` with a plain-text fallback."""
+    """Send ``templates/emails/<template>.html`` with a plain-text fallback.
+{% if celery %}
+
+    The email is rendered now and sent by a Celery worker.
+{% endif %}
+    """
     html_body = render_to_string(f"emails/{template}.html", context)
     text_body = "\n".join(line.strip() for line in html.unescape(strip_tags(html_body)).splitlines() if line.strip())
+    recipients = [to] if isinstance(to, str) else list(to)
+{% if celery %}
+    send_email.delay(to=recipients, subject=subject, text_body=text_body, html_body=html_body)
+{% else %}
     message = EmailMultiAlternatives(
         subject=subject,
         body=text_body,
         from_email=settings.DEFAULT_FROM_EMAIL,
-        to=[to] if isinstance(to, str) else list(to),
+        to=recipients,
     )
     message.attach_alternative(html_body, "text/html")
     message.send()
+{% endif %}

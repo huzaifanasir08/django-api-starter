@@ -32,6 +32,10 @@ OPTIONAL_FILES = {
     "dot-dockerignore": "docker",
     "templates/emails/otp.html": "two_factor",
     "tests/accounts/test_otp.py.j2": "two_factor",
+    "conf/celery.py.j2": "celery",
+    "core/tasks.py.j2": "celery",
+    "apps/accounts/tasks.py.j2": "celery",
+    "tests/accounts/test_tasks.py.j2": "celery",
 }
 
 PROJECT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
@@ -42,6 +46,7 @@ class ProjectConfig:
     name: str
     database: str = "postgres"
     two_factor: bool = False
+    celery: bool = False
     docker: bool = True
     api_docs: bool = True
 

@@ -7,6 +7,9 @@ Pillow>=11
 {% if api_docs %}
 drf-spectacular>=0.28,<1
 {% endif %}
+{% if celery %}
+celery[redis]>=5.5,<6
+{% endif %}
 {% if database == "postgres" %}
 psycopg[binary]>=3.2,<4
 {% endif %}
